@@ -6,6 +6,7 @@ import { SchemaAdapter } from "./schema.js"
 import { basicSchemaAdapter } from "./basicSchema.js"
 import { pmDocFromSpans } from "./traversal.js"
 import { syncPlugin } from "./syncPlugin.js"
+import patchesToTr from "./patchesToTr.js"
 export { type DocHandle }
 
 export {
@@ -18,6 +19,9 @@ export {
 export { basicSchemaAdapter } from "./basicSchema.js"
 export { pmDocFromSpans, pmNodeToSpans } from "./traversal.js"
 export { syncPlugin, syncPluginKey } from "./syncPlugin.js"
+export { patchesToTr } from "./patchesToTr.js"
+
+type PatchesToTrFunc = typeof patchesToTr
 
 /**
  * Initialize a ProseMirror document, schema, and plugin from an Automerge document
@@ -72,7 +76,12 @@ export function init(
   handle: DocHandle<unknown>,
   pathToTextField: A.Prop[],
   options: { schemaAdapter: SchemaAdapter } | undefined = undefined,
-): { schema: Schema; pmDoc: Node; plugin: Plugin } {
+): {
+  schema: Schema
+  pmDoc: Node
+  plugin: Plugin
+  patchesToTr: PatchesToTrFunc
+} {
   const adapter = options?.schemaAdapter ?? basicSchemaAdapter
   const doc = handle.docSync()
   if (!doc) {
@@ -83,5 +92,5 @@ export function init(
   const spans = A.spans(doc, pathToTextField)
   const pmDoc = pmDocFromSpans(adapter, spans)
   const plugin = syncPlugin({ adapter, handle, path: pathToTextField })
-  return { schema: adapter.schema, pmDoc, plugin }
+  return { schema: adapter.schema, pmDoc, plugin, patchesToTr }
 }
