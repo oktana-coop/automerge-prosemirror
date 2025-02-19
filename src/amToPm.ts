@@ -47,12 +47,11 @@ export default function (
           const patchIndex = patch.path[patch.path.length - 1] as number
           const block = findBlockAtCharIdx(spansAtStart, patchIndex)
           if (block != null) {
-            result = handleBlockChange(
+            result = handleDeleteBlock(
               adapter,
               path,
               spansAtStart,
-              patchIndex,
-              [patch],
+              patch,
               result,
               diffMode,
             )
@@ -130,9 +129,10 @@ function handleDelete(
   const end = start + (patch.length || 1)
   if (diffMode) {
     const diffMark = adapter.schema.marks.diff_delete.create()
-    tx = tx.addMark(start, end, diffMark)
+    return tx.addMark(start, end, diffMark)
+  } else {
+    return tx.delete(start, end)
   }
-  return tx.delete(start, end)
 }
 
 function handleMark(
@@ -236,6 +236,32 @@ export function handleBlockChange(
     tx = tx.replace(chFrom, chTo, docAfter.slice(change.start, change.endB))
   }
 
+  return tx
+}
+
+function handleDeleteBlock(
+  adapter: SchemaAdapter,
+  atPath: Prop[],
+  spans: am.Span[],
+  patch: DelPatch,
+  tx: Transaction,
+  diffMode: boolean,
+): Transaction {
+  const index = charPath(atPath, patch.path)
+  if (index === null) return tx
+  const start = amSpliceIdxToPmIdx(adapter, spans, index)
+  if (start == null) throw new Error("Invalid start index in block deletion")
+  const end = amSpliceIdxToPmIdx(adapter, spans, index + (patch.length || 1))
+  if (end == null) throw new Error("Invalid end index in block deletion")
+
+  if (diffMode) {
+    const diffMark = adapter.schema.marks.diff_delete.create()
+    tx = tx.addMark(start, end, diffMark)
+  } else {
+    tx = tx.delete(start, end)
+  }
+
+  patchSpans(atPath, spans, patch)
   return tx
 }
 
