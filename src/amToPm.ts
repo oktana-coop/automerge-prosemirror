@@ -26,6 +26,7 @@ export default function (
   patches: Array<Patch>,
   path: Prop[],
   tx: Transaction,
+  diffMode?: boolean,
 ): Transaction {
   const gathered = gatherPatches(path, patches)
   let result = tx
@@ -33,7 +34,14 @@ export default function (
     if (patchGroup.type === "text") {
       for (const patch of patchGroup.patches) {
         if (patch.action === "splice") {
-          result = handleSplice(adapter, spansAtStart, patch, path, result)
+          result = handleSplice(
+            adapter,
+            spansAtStart,
+            patch,
+            path,
+            result,
+            diffMode ?? false,
+          )
           //console.log(`patch: ${JSON.stringify(patch)}`)
           //console.log(`spans before patch: ${JSON.stringify(spansAtStart, null, 2)}`)
           patchSpans(path, spansAtStart, patch)
@@ -49,6 +57,7 @@ export default function (
               patchIndex,
               [patch],
               result,
+              diffMode ?? false,
             )
           } else {
             result = handleDelete(adapter, spansAtStart, patch, path, result)
@@ -67,6 +76,7 @@ export default function (
         patchGroup.index,
         patchGroup.patches,
         result,
+        diffMode ?? false,
       )
     }
   }
@@ -79,12 +89,21 @@ export function handleSplice(
   patch: SpliceTextPatch,
   path: Prop[],
   tx: Transaction,
+  diffMode: boolean,
 ): Transaction {
   const index = charPath(path, patch.path)
   if (index === null) return tx
   const pmIdx = amSpliceIdxToPmIdx(adapter, spans, index)
   if (pmIdx == null) throw new Error("Invalid index")
-  const content = patchContentToFragment(adapter, patch.value, patch.marks)
+  const content = patchContentToFragment(
+    adapter,
+    patch.value,
+    diffMode,
+    patch.marks,
+  )
+
+  console.log("Created fragment with marks:", content.firstChild?.marks)
+
   tx = tx.step(new ReplaceStep(pmIdx, pmIdx, new Slice(content, 0, 0)))
   return tx
 }
@@ -144,6 +163,7 @@ export function handleBlockChange(
   _blockIdx: number,
   patches: am.Patch[],
   tx: Transaction,
+  diffMode: boolean,
 ): Transaction {
   for (const patch of patches) {
     patchSpans(atPath, spans, patch)
@@ -181,11 +201,49 @@ export function handleBlockChange(
         $from.parentOffset,
         $to.parentOffset,
       )
+      if (diffMode) {
+        const insertMark = adapter.schema.marks.insert.create()
+        tx = tx.addStoredMark(insertMark)
+      }
       tx = tx.insertText(text, chFrom, chTo)
     }
   }
+
   if (!handledByInline) {
-    tx = tx.replace(chFrom, chTo, docAfter.slice(change.start, change.endB))
+    let slice = docAfter.slice(change.start, change.endB)
+
+    if (diffMode) {
+      const insertMark = adapter.schema.marks.insert.create()
+
+      // Create a function to recursively process nodes
+      function addMarkToTextNodes(fragment: Fragment) {
+        // @ts-ignore
+        const result = []
+        fragment.forEach(node => {
+          if (node.isText) {
+            // Add the insert mark to text nodes
+            result.push(node.mark(node.marks.concat([insertMark])))
+          } else if (node.content && node.content.size > 0) {
+            // Process children recursively
+            result.push(node.copy(addMarkToTextNodes(node.content)))
+          } else {
+            result.push(node)
+          }
+        })
+
+        // @ts-ignore
+        return Fragment.from(result)
+      }
+
+      // Create a new slice with insert marks applied to text nodes
+      slice = new Slice(
+        addMarkToTextNodes(slice.content),
+        slice.openStart,
+        slice.openEnd,
+      )
+    }
+
+    tx = tx.replace(chFrom, chTo, slice)
   }
 
   return tx
@@ -243,6 +301,7 @@ function charPath(textPath: Prop[], candidatePath: Prop[]): number | null {
 function patchContentToFragment(
   adapter: SchemaAdapter,
   patchContent: string,
+  diffMode: boolean,
   marks?: am.MarkSet,
 ): Fragment {
   let pmMarks: Array<Mark> | undefined = undefined
@@ -250,9 +309,20 @@ function patchContentToFragment(
     pmMarks = pmMarksFromAmMarks(adapter, marks)
   }
 
+  if (diffMode) {
+    const insertMark = adapter.schema.marks.insert.create()
+    if (pmMarks) {
+      pmMarks.push(insertMark)
+    } else {
+      pmMarks = [insertMark]
+    }
+  }
+
   // Splice is only ever called once a block has already been created so we're
   // only inserting text. This means we don't have to think about openStart
   // and openEnd
+
+  console.log(patchContent, pmMarks)
   return Fragment.from(adapter.schema.text(patchContent, pmMarks))
 }
 
