@@ -99,7 +99,7 @@ export function handleSplice(
   patch: SpliceTextPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean, // Add diffMode parameter
+  diffMode: boolean,
 ): Transaction {
   const index = charPath(path, patch.path)
   if (index === null) return tx
@@ -120,7 +120,7 @@ function handleDelete(
   patch: DelPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean, // Add diffMode parameter
+  diffMode: boolean,
 ): Transaction {
   const index = charPath(path, patch.path)
   if (index === null) return tx
@@ -141,7 +141,7 @@ function handleMark(
   patch: MarkPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean, // Add diffMode parameter
+  diffMode: boolean,
 ) {
   if (isArrayEqual(patch.path, path)) {
     for (const mark of patch.marks) {
@@ -184,7 +184,7 @@ export function handleBlockChange(
   _blockIdx: number,
   patches: am.Patch[],
   tx: Transaction,
-  diffMode: boolean, // Add diffMode parameter
+  diffMode: boolean,
 ): Transaction {
   for (const patch of patches) {
     patchSpans(atPath, spans, patch)
