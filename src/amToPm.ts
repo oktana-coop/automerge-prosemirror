@@ -79,15 +79,27 @@ export default function (
         }
       }
     } else {
-      result = handleBlockChange(
-        adapter,
-        path,
-        spansAtStart,
-        patchGroup.index,
-        patchGroup.patches,
-        result,
-        diffMode,
+      const nonPutPatches = patchGroup.patches.filter(
+        patch => patch.action !== "put",
       )
+
+      if (nonPutPatches.length > 0) {
+        result = handleBlockChange(
+          adapter,
+          path,
+          spansAtStart,
+          patchGroup.index,
+          patchGroup.patches,
+          result,
+          diffMode,
+        )
+      } else {
+        for (const patch of patches) {
+          patchSpans(path, spansAtStart, patch)
+        }
+
+        return result
+      }
     }
   }
   return result
