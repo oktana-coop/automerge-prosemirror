@@ -1,6 +1,6 @@
 import { next as automerge } from "@automerge/automerge/slim"
 import { EditorState, Transaction } from "prosemirror-state"
-import amToPm from "./amToPm.js"
+import amToPm from "./amToPmNew.js"
 import { next as am } from "@automerge/automerge/slim"
 import { SchemaAdapter } from "./schema.js"
 
