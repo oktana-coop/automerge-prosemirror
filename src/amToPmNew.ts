@@ -1,8 +1,8 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
-import { Fragment, Slice, Mark } from "prosemirror-model"
+import { Slice } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
-import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
-import { findBlockAtCharIdx, applyPatchToSpans } from "./maintainSpans.js"
+import { amIdxToPmBlockIdx, amSpliceIdxToPmIdx } from "./traversal.js"
+import { applyPatchToSpans } from "./maintainSpans.js"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
 import { ReplaceStep } from "prosemirror-transform"
 import { pmMarksFromAmMarks, SchemaAdapter } from "./schema.js"
@@ -109,19 +109,25 @@ export default function (
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromDelPatch,
           })
+        case "insertBlock":
+          return updateTransactionAndApplySpansForInsertBlockGroup({
+            patchGroup,
+            tx: acc.tx,
+            path,
+            adapter,
+            spans: acc.spans,
+            diffMode,
+          })
         default:
           // No update to the ProseMirror transaction but we still update the Automerge spans.
-          return patchGroup.patches.reduce<{
-            tx: Transaction
-            spans: Array<am.Span>
-          }>(
-            (groupAcc, patch) => {
-              const newSpans = applyPatchToSpans(path, groupAcc.spans, patch)
-
-              return { tx: groupAcc.tx, spans: newSpans }
-            },
-            { tx, spans },
-          )
+          return {
+            tx,
+            spans: applyPatchGroupSpans({
+              patchGroup,
+              initialSpans: acc.spans,
+              path,
+            }),
+          }
       }
     },
     { tx, spans },
@@ -130,17 +136,29 @@ export default function (
   return result.tx
 }
 
+const applyPatchGroupSpans = ({
+  patchGroup,
+  initialSpans,
+  path,
+}: {
+  patchGroup: PatchGroup
+  initialSpans: am.Span[]
+  path: Prop[]
+}): am.Span[] =>
+  patchGroup.patches.reduce<Array<am.Span>>((accSpans, patch) => {
+    const newSpans = applyPatchToSpans(path, accSpans, patch)
+    return newSpans
+  }, initialSpans)
+
 const filterAndGroupPatches = (
   patches: Array<Patch>,
   path: Prop[],
 ): Array<PatchGroup> => {
-  const pathPatches = patches.filter(
-    patch => !isPrefixOfArray(path, patch.path),
-  )
+  const pathPatches = patches.filter(patch => isPrefixOfArray(path, patch.path))
 
   const patchIndexGroups = Object.values(
     Object.groupBy(pathPatches, patch => patch.path[1]),
-  ).filter(group => group !== undefined)
+  ).filter(group => group !== undefined) as am.Patch[][]
 
   const patchGroups = patchIndexGroups
     // Split non-block patches into separate groups
@@ -149,7 +167,7 @@ const filterAndGroupPatches = (
         return [...acc, ...group.map(patch => [patch])]
       }
 
-      return acc
+      return [...acc, group]
     }, [])
     // Construct block patch groups depending on patch types
     .reduce<Array<PatchGroup>>((acc, group) => {
@@ -371,4 +389,86 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   }
 
   return tx
+}
+
+const updateTransactionAndApplySpansForInsertBlockGroup = ({
+  patchGroup,
+  tx,
+  path,
+  adapter,
+  spans,
+}: {
+  patchGroup: InsertBlockPatchGroup
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}): { tx: Transaction; spans: am.Span[] } => {
+  // Get a copy of patches to avoid mutation.
+  // We need to maintain the patches list as-is to properly apply the spans in the end.
+  const patches = [...patchGroup.patches]
+
+  const firstPatch = patches.shift()!
+  if (firstPatch.action !== "insert") {
+    throw new Error(
+      "Unexpected patch type in insert block group. The first patch should be an insert patch.",
+    )
+  }
+  const amBlockIndex = firstPatch.path[1]
+  if (typeof amBlockIndex !== "number") {
+    throw new Error("Could not retrieve block index from insert block group.")
+  }
+
+  const blockTypePatch = patches.findLast(
+    patch => patch.action === "put" && patch.path[2] === "type",
+  )
+  if (!blockTypePatch) {
+    throw new Error(
+      "Could not find block type patch in insert block group. This is required to determine the block type.",
+    )
+  }
+  const blockType = (blockTypePatch as am.PutPatch).value?.toString()
+
+  const pos = amIdxToPmBlockIdx(adapter, spans, amBlockIndex)
+  if (pos == null)
+    throw new Error(
+      "Invalid ProseMirror index when trying to insert a block from the patch",
+    )
+
+  switch (blockType) {
+    case "paragraph": {
+      const node = adapter.schema.nodes.paragraph.create()
+      tx = tx.insert(pos, node)
+      break
+    }
+    case "heading": {
+      const levelAttrPatch = patches.findLast(
+        patch =>
+          patch.path.length === 4 &&
+          patch.action === "put" &&
+          patch.path[2] === "attrs" &&
+          patch.path[3] === "level",
+      )
+      const level = (levelAttrPatch as am.PutPatch).value
+      if (typeof level !== "number") {
+        throw new Error("Invalid heading level")
+      }
+
+      const node = adapter.schema.nodes.heading.create({ level })
+      tx = tx.insert(pos, node)
+      break
+    }
+    default:
+      throw new Error(`Unsupported block type: ${blockType}`)
+  }
+
+  return {
+    tx,
+    spans: applyPatchGroupSpans({
+      patchGroup,
+      initialSpans: spans,
+      path,
+    }),
+  }
 }
