@@ -1,0 +1,374 @@
+import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
+import { Fragment, Slice, Mark } from "prosemirror-model"
+import { Transaction } from "prosemirror-state"
+import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
+import { findBlockAtCharIdx, applyPatchToSpans } from "./maintainSpans.js"
+import { isPrefixOfArray, isArrayEqual } from "./utils.js"
+import { ReplaceStep } from "prosemirror-transform"
+import { pmMarksFromAmMarks, SchemaAdapter } from "./schema.js"
+import { charPath, patchContentToFragment } from "./amToPm.js"
+
+export const isBlockPatch = (patch: Patch): boolean => {
+  return patch.action === "insert" || patch.action === "put"
+}
+
+type SpliceTextPatchGroup = {
+  type: "splice"
+  patches: Array<am.SpliceTextPatch>
+}
+
+type DelPatchGroup = {
+  type: "del"
+  patches: Array<am.DelPatch>
+}
+
+type MarkPatchGroup = {
+  type: "mark"
+  patches: Array<am.MarkPatch>
+}
+
+// For some reason `UnmarkPatch` is not exported from `@automerge/automerge/slim`
+// so we have to redefine it here.
+type UnmarkPatch = {
+  action: "unmark"
+  path: Prop[]
+  name: string
+  start: number
+  end: number
+}
+
+type UnmarkPatchGroup = {
+  type: "unmark"
+  patches: Array<UnmarkPatch>
+}
+
+type InsertBlockPatchGroup = {
+  type: "insertBlock"
+  patches: Array<am.InsertPatch | am.PutPatch>
+}
+
+type UpdateBlockPatchGroup = {
+  type: "updateBlock"
+  patches: Array<am.PutPatch>
+}
+
+type PatchGroup =
+  | SpliceTextPatchGroup
+  | DelPatchGroup
+  | MarkPatchGroup
+  | UnmarkPatchGroup
+  | InsertBlockPatchGroup
+  | UpdateBlockPatchGroup
+
+const isBlockPatchIndexGroup = (group: Array<Patch>): boolean =>
+  group.every(patch => patch.action === "insert" || patch.action === "put")
+
+export default function (
+  adapter: SchemaAdapter,
+  spans: am.Span[],
+  patches: Array<Patch>,
+  path: Prop[],
+  tx: Transaction,
+  diffMode = false,
+): Transaction {
+  const patchGroups = filterAndGroupPatches(patches, path)
+
+  const result = patchGroups.reduce<{ tx: Transaction; spans: Array<am.Span> }>(
+    (acc, patchGroup) => {
+      switch (patchGroup.type) {
+        case "splice":
+          return updateTransactionAndApplySpansForNonBlockPatchGroup({
+            tx: acc.tx,
+            path,
+            adapter,
+            spans: acc.spans,
+            diffMode,
+          })({
+            patchGroup,
+            updateTransactionFromPatchFn: updateTransactionFromSplicePatch,
+          })
+        case "mark":
+          return updateTransactionAndApplySpansForNonBlockPatchGroup({
+            tx: acc.tx,
+            path,
+            adapter,
+            spans: acc.spans,
+            diffMode,
+          })({
+            patchGroup,
+            updateTransactionFromPatchFn: updateTransactionFromMarkPatch,
+          })
+        case "del":
+          return updateTransactionAndApplySpansForNonBlockPatchGroup({
+            tx: acc.tx,
+            path,
+            adapter,
+            spans: acc.spans,
+            diffMode,
+          })({
+            patchGroup,
+            updateTransactionFromPatchFn: updateTransactionFromDelPatch,
+          })
+        default:
+          // No update to the ProseMirror transaction but we still update the Automerge spans.
+          return patchGroup.patches.reduce<{
+            tx: Transaction
+            spans: Array<am.Span>
+          }>(
+            (groupAcc, patch) => {
+              const newSpans = applyPatchToSpans(path, groupAcc.spans, patch)
+
+              return { tx: groupAcc.tx, spans: newSpans }
+            },
+            { tx, spans },
+          )
+      }
+    },
+    { tx, spans },
+  )
+
+  return result.tx
+}
+
+const filterAndGroupPatches = (
+  patches: Array<Patch>,
+  path: Prop[],
+): Array<PatchGroup> => {
+  const pathPatches = patches.filter(
+    patch => !isPrefixOfArray(path, patch.path),
+  )
+
+  const patchIndexGroups = Object.values(
+    Object.groupBy(pathPatches, patch => patch.path[1]),
+  ).filter(group => group !== undefined)
+
+  const patchGroups = patchIndexGroups
+    // Split non-block patches into separate groups
+    .reduce<Array<Array<am.Patch>>>((acc, group) => {
+      if (group.length > 1 && !isBlockPatchIndexGroup(group)) {
+        return [...acc, ...group.map(patch => [patch])]
+      }
+
+      return acc
+    }, [])
+    // Construct block patch groups depending on patch types
+    .reduce<Array<PatchGroup>>((acc, group) => {
+      switch (group[0].action) {
+        case "splice":
+          return [
+            ...acc,
+            {
+              type: "splice",
+              patches: group,
+            } as SpliceTextPatchGroup,
+          ]
+        case "del":
+          return [
+            ...acc,
+            {
+              type: "del",
+              patches: group,
+            } as DelPatchGroup,
+          ]
+        case "mark":
+          return [
+            ...acc,
+            {
+              type: "mark",
+              patches: group,
+            } as MarkPatchGroup,
+          ]
+        case "unmark":
+          return [
+            ...acc,
+            {
+              type: "unmark",
+              patches: group,
+            } as UnmarkPatchGroup,
+          ]
+        case "insert":
+          return [
+            ...acc,
+            {
+              type: "insertBlock",
+              patches: group,
+            } as InsertBlockPatchGroup,
+          ]
+        case "put":
+          return [
+            ...acc,
+            {
+              type: "updateBlock",
+              patches: group,
+            } as UpdateBlockPatchGroup,
+          ]
+        default:
+          return acc
+      }
+    }, [])
+
+  return patchGroups
+}
+
+type UpdateTransactionAndApplySpansForNonBlockPatchGroup = (context: {
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}) => (
+  groupArgs:
+    | {
+        patchGroup: SpliceTextPatchGroup
+        updateTransactionFromPatchFn: UpdateTransactionFromSplicePatchFn
+      }
+    | {
+        patchGroup: MarkPatchGroup
+        updateTransactionFromPatchFn: UpdateTransactionFromMarkPatchFn
+      }
+    | {
+        patchGroup: DelPatchGroup
+        updateTransactionFromPatchFn: UpdateTransactionFromDelPatchFn
+      },
+) => { tx: Transaction; spans: am.Span[] }
+
+const updateTransactionAndApplySpansForNonBlockPatchGroup: UpdateTransactionAndApplySpansForNonBlockPatchGroup =
+
+    ({ tx, path, adapter, spans, diffMode }) =>
+    ({ patchGroup, updateTransactionFromPatchFn }) =>
+      patchGroup.patches.reduce<{
+        tx: Transaction
+        spans: Array<am.Span>
+      }>(
+        (groupAcc, patch) => {
+          const updatedTx = updateTransactionFromPatchFn({
+            // @ts-expect-error TS cannot infer that the type is correct here according to the group args type
+            patch,
+            tx: groupAcc.tx,
+            path,
+            adapter,
+            spans: groupAcc.spans,
+            diffMode,
+          })
+
+          const newSpans = applyPatchToSpans(path, groupAcc.spans, patch)
+
+          return { tx: updatedTx, spans: newSpans }
+        },
+        { tx, spans },
+      )
+
+type UpdateTransactionFromSplicePatchFn = (args: {
+  patch: am.SpliceTextPatch
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}) => Transaction
+
+const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
+  patch,
+  tx,
+  path,
+  adapter,
+  spans,
+  diffMode,
+}) => {
+  const index = charPath(path, patch.path)
+  if (index === null) return tx
+  const pmIdx = amSpliceIdxToPmIdx(adapter, spans, index)
+  if (pmIdx == null) throw new Error("Invalid index")
+  const content = patchContentToFragment(adapter, patch.value, patch.marks)
+  tx = tx.step(new ReplaceStep(pmIdx, pmIdx, new Slice(content, 0, 0)))
+  if (diffMode) {
+    const diffMark = adapter.schema.marks.diff_insert.create()
+    tx = tx.addMark(pmIdx, pmIdx + content.size, diffMark)
+  }
+  return tx
+}
+
+type UpdateTransactionFromMarkPatchFn = (args: {
+  patch: am.MarkPatch
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}) => Transaction
+
+const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
+  patch,
+  tx,
+  path,
+  adapter,
+  spans,
+  diffMode,
+}) => {
+  if (isArrayEqual(patch.path, path)) {
+    for (const mark of patch.marks) {
+      const pmStart = amSpliceIdxToPmIdx(adapter, spans, mark.start)
+      const pmEnd = amSpliceIdxToPmIdx(adapter, spans, mark.end)
+      if (pmStart == null || pmEnd == null) throw new Error("Invalid index")
+      if (mark.value == null) {
+        const markMapping = adapter.markMappings.find(
+          m => m.automergeMarkName === mark.name,
+        )
+        const markType = markMapping
+          ? markMapping.prosemirrorMark
+          : adapter.unknownMark
+        tx = tx.removeMark(pmStart, pmEnd, markType)
+        if (diffMode) {
+          const diffMark = adapter.schema.marks.diff_modify.create()
+          tx = tx.addMark(pmStart, pmEnd, diffMark)
+        }
+      } else {
+        const pmMarks = pmMarksFromAmMarks(adapter, {
+          [mark.name]: mark.value,
+        })
+        for (const pmMark of pmMarks) {
+          tx = tx.addMark(pmStart, pmEnd, pmMark)
+          if (diffMode) {
+            const diffMark = adapter.schema.marks.diff_modify.create()
+            tx = tx.addMark(pmStart, pmEnd, diffMark)
+          }
+        }
+      }
+    }
+  }
+  return tx
+}
+
+type UpdateTransactionFromDelPatchFn = (args: {
+  patch: am.DelPatch
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}) => Transaction
+
+const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
+  patch,
+  tx,
+  path,
+  adapter,
+  spans,
+  diffMode,
+}) => {
+  const index = charPath(path, patch.path)
+  if (index === null) return tx
+  const start = amSpliceIdxToPmIdx(adapter, spans, index)
+  if (start == null) throw new Error("Invalid start index in deletion")
+  const end = amSpliceIdxToPmIdx(adapter, spans, index + (patch.length || 1))
+  if (end == null) throw new Error("Invalid end index in deletion")
+
+  if (diffMode) {
+    const diffMark = adapter.schema.marks.diff_delete.create()
+    tx = tx.addMark(start, end, diffMark)
+  } else {
+    tx = tx.delete(start, end)
+  }
+
+  return tx
+}

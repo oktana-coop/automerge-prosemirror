@@ -316,7 +316,10 @@ function isSurrogatePair(str: string) {
 
 // If the path of the patch is of the form [path, <index>] then we know this is
 // a path to a character within the sequence given by path
-function charPath(textPath: Prop[], candidatePath: Prop[]): number | null {
+export function charPath(
+  textPath: Prop[],
+  candidatePath: Prop[],
+): number | null {
   if (candidatePath.length !== textPath.length + 1) return null
   for (let i = 0; i < textPath.length; i++) {
     if (textPath[i] !== candidatePath[i]) return null
@@ -326,7 +329,7 @@ function charPath(textPath: Prop[], candidatePath: Prop[]): number | null {
   return null
 }
 
-function patchContentToFragment(
+export function patchContentToFragment(
   adapter: SchemaAdapter,
   patchContent: string,
   marks?: am.MarkSet,
@@ -355,7 +358,10 @@ type BlockPatches = {
   patches: am.Patch[]
 }
 
-function gatherPatches(textPath: am.Prop[], diff: am.Patch[]): GatheredPatch[] {
+export function gatherPatches(
+  textPath: am.Prop[],
+  diff: am.Patch[],
+): GatheredPatch[] {
   const result: GatheredPatch[] = []
 
   type State =
