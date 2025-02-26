@@ -1,7 +1,7 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
 import { Slice } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
-import { amIdxToPmBlockIdx, amSpliceIdxToPmIdx } from "./traversal.js"
+import { amSpliceIdxToPmIdx } from "./traversal.js"
 import { applyPatchToSpans } from "./maintainSpans.js"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
 import { ReplaceStep } from "prosemirror-transform"
@@ -430,7 +430,7 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
   }
   const blockType = (blockTypePatch as am.PutPatch).value?.toString()
 
-  const pos = amIdxToPmBlockIdx(adapter, spans, amBlockIndex)
+  const pos = amSpliceIdxToPmIdx(adapter, spans, amBlockIndex)
   if (pos == null)
     throw new Error(
       "Invalid ProseMirror index when trying to insert a block from the patch",
