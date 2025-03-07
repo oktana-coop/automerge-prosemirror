@@ -1,12 +1,13 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
 import { Slice } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
-import { amSpliceIdxToPmIdx } from "./traversal.js"
+import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
 import { applyPatchToSpans } from "./maintainSpans.js"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
 import { ReplaceStep } from "prosemirror-transform"
 import { pmMarksFromAmMarks, SchemaAdapter } from "./schema.js"
-import { charPath, patchContentToFragment } from "./amToPm.js"
+import { charPath, patchContentToFragment, findDiff } from "./amToPm.js"
+import { ChangeSet } from "prosemirror-changeset"
 
 export const isBlockPatch = (patch: Patch): boolean => {
   return patch.action === "insert" || patch.action === "put"
@@ -391,7 +392,7 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   return tx
 }
 
-const updateTransactionAndApplySpansForInsertBlockGroup = ({
+const updateTransactionAndApplySpansForInsertBlockGroupOld = ({
   patchGroup,
   tx,
   path,
@@ -470,5 +471,67 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
       initialSpans: spans,
       path,
     }),
+  }
+}
+
+const updateTransactionAndApplySpansForInsertBlockGroup = ({
+  patchGroup,
+  tx,
+  path,
+  adapter,
+  spans,
+  diffMode,
+}: {
+  patchGroup: InsertBlockPatchGroup
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}): { tx: Transaction; spans: am.Span[] } => {
+  const newSpans = applyPatchGroupSpans({
+    patchGroup,
+    initialSpans: spans,
+    path,
+  })
+
+  const pmDocBefore = tx.doc
+  const pmDocAfter = pmDocFromSpans(adapter, newSpans)
+
+  const change = findDiff(pmDocBefore.content, pmDocAfter.content)
+  if (change == null) {
+    return {
+      tx,
+      spans: newSpans,
+    }
+  }
+
+  const updatedTx = tx.replace(
+    change.start,
+    change.endA,
+    pmDocAfter.slice(change.start, change.endB),
+  )
+
+  if (diffMode) {
+    const { changes } = ChangeSet.create(pmDocBefore).addSteps(
+      updatedTx.doc,
+      updatedTx.mapping.maps,
+      [],
+    )
+
+    changes.forEach(({ fromA, toA, fromB, toB, inserted, deleted }) => {
+      let nextInsertMarkStart = fromB
+      inserted.forEach(span => {
+        const diffMark = adapter.schema.marks.diff_insert.create()
+        const insertMarkEnd = nextInsertMarkStart + span.length
+        updatedTx.addMark(nextInsertMarkStart, insertMarkEnd, diffMark)
+        nextInsertMarkStart = insertMarkEnd
+      })
+    })
+  }
+
+  return {
+    tx: updatedTx,
+    spans: newSpans,
   }
 }

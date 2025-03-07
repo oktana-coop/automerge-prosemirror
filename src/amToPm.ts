@@ -277,7 +277,7 @@ function handleDeleteBlock(
   return tx
 }
 
-function findDiff(
+export function findDiff(
   a: Fragment,
   b: Fragment,
 ): { start: number; endA: number; endB: number } | null {
