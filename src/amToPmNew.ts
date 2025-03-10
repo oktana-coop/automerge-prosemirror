@@ -72,6 +72,7 @@ export default function (
   tx: Transaction,
   diffMode = false,
 ): Transaction {
+  const pmDocBefore = tx.doc
   const patchGroups = filterAndGroupPatches(patches, path)
 
   const result = patchGroups.reduce<{ tx: Transaction; spans: Array<am.Span> }>(
@@ -134,6 +135,24 @@ export default function (
     { tx, spans },
   )
 
+  if (diffMode && patchGroups.some(group => group.type === "insertBlock")) {
+    const { changes } = ChangeSet.create(pmDocBefore).addSteps(
+      result.tx.doc,
+      result.tx.mapping.maps,
+      [],
+    )
+
+    changes.forEach(({ fromA, toA, fromB, toB, inserted, deleted }) => {
+      let nextInsertMarkStart = fromB
+      inserted.forEach(span => {
+        const diffMark = adapter.schema.marks.diff_insert.create()
+        const insertMarkEnd = nextInsertMarkStart + span.length
+        result.tx.addMark(nextInsertMarkStart, insertMarkEnd, diffMark)
+        nextInsertMarkStart = insertMarkEnd
+      })
+    })
+  }
+
   return result.tx
 }
 
@@ -157,9 +176,29 @@ const filterAndGroupPatches = (
 ): Array<PatchGroup> => {
   const pathPatches = patches.filter(patch => isPrefixOfArray(path, patch.path))
 
-  const patchIndexGroups = Object.values(
-    Object.groupBy(pathPatches, patch => patch.path[1]),
-  ).filter(group => group !== undefined) as am.Patch[][]
+  const patchIndexGroups = Array.from(
+    pathPatches
+      .reduce<Map<string, Array<Patch>>>((acc, patch) => {
+        if (patch.action === "mark") {
+          acc.set(`mark${patch.marks[0].start}-${patch.marks[0].end}`, [patch])
+        }
+
+        const index = patch.path[1]
+        if (typeof index !== "number") {
+          return acc
+        }
+
+        const group = acc.get(index.toString())
+        if (group) {
+          group.push(patch)
+        } else {
+          acc.set(index.toString(), [patch])
+        }
+
+        return acc
+      }, new Map())
+      .values(),
+  )
 
   const patchGroups = patchIndexGroups
     // Split non-block patches into separate groups
@@ -480,7 +519,6 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
   path,
   adapter,
   spans,
-  diffMode,
 }: {
   patchGroup: InsertBlockPatchGroup
   tx: Transaction
@@ -511,24 +549,6 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
     change.endA,
     pmDocAfter.slice(change.start, change.endB),
   )
-
-  if (diffMode) {
-    const { changes } = ChangeSet.create(pmDocBefore).addSteps(
-      updatedTx.doc,
-      updatedTx.mapping.maps,
-      [],
-    )
-
-    changes.forEach(({ fromA, toA, fromB, toB, inserted, deleted }) => {
-      let nextInsertMarkStart = fromB
-      inserted.forEach(span => {
-        const diffMark = adapter.schema.marks.diff_insert.create()
-        const insertMarkEnd = nextInsertMarkStart + span.length
-        updatedTx.addMark(nextInsertMarkStart, insertMarkEnd, diffMark)
-        nextInsertMarkStart = insertMarkEnd
-      })
-    })
-  }
 
   return {
     tx: updatedTx,
