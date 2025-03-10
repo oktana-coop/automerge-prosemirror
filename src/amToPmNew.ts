@@ -53,6 +53,16 @@ type UpdateBlockPatchGroup = {
   patches: Array<am.PutPatch>
 }
 
+type UpdateBlockHierarchyPatchGroup = {
+  type: "updateBlockHierarchy"
+  patches: Array<am.PutPatch>
+}
+
+type UpdateBlockTypeAndAttrsPatchGroup = {
+  type: "updateBlockTypeAndAttrs"
+  patches: Array<am.PutPatch>
+}
+
 type PatchGroup =
   | SpliceTextPatchGroup
   | DelPatchGroup
@@ -60,9 +70,16 @@ type PatchGroup =
   | UnmarkPatchGroup
   | InsertBlockPatchGroup
   | UpdateBlockPatchGroup
+  | UpdateBlockHierarchyPatchGroup
+  | UpdateBlockTypeAndAttrsPatchGroup
 
 const isBlockPatchIndexGroup = (group: Array<Patch>): boolean =>
   group.every(patch => patch.action === "insert" || patch.action === "put")
+
+const isBlockPatchGroupWithStructureChanges = (group: PatchGroup) =>
+  group.type === "insertBlock" ||
+  group.type === "updateBlockHierarchy" ||
+  group.type === "updateBlock"
 
 export default function (
   adapter: SchemaAdapter,
@@ -112,7 +129,9 @@ export default function (
             updateTransactionFromPatchFn: updateTransactionFromDelPatch,
           })
         case "insertBlock":
-          return updateTransactionAndApplySpansForInsertBlockGroup({
+        case "updateBlockHierarchy":
+        case "updateBlock":
+          return updateTransactionAndApplySpansForBlockPatchGroup({
             patchGroup,
             tx: acc.tx,
             path,
@@ -120,6 +139,17 @@ export default function (
             spans: acc.spans,
             diffMode,
           })
+        case "updateBlockTypeAndAttrs":
+          return updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup(
+            {
+              patchGroup,
+              tx: acc.tx,
+              path,
+              adapter,
+              spans: acc.spans,
+              diffMode,
+            },
+          )
         default:
           // No update to the ProseMirror transaction but we still update the Automerge spans.
           return {
@@ -135,7 +165,7 @@ export default function (
     { tx, spans },
   )
 
-  if (diffMode && patchGroups.some(group => group.type === "insertBlock")) {
+  if (diffMode && patchGroups.some(isBlockPatchGroupWithStructureChanges)) {
     const { changes } = ChangeSet.create(pmDocBefore).addSteps(
       result.tx.doc,
       result.tx.mapping.maps,
@@ -169,6 +199,13 @@ const applyPatchGroupSpans = ({
     const newSpans = applyPatchToSpans(path, accSpans, patch)
     return newSpans
   }, initialSpans)
+
+const groupContainsOnlyTypeAndAttrs = (group: Array<Patch>): boolean =>
+  group.every(
+    patch =>
+      patch.action === "put" &&
+      (patch.path[2] === "type" || patch.path[2] === "attrs"),
+  )
 
 const filterAndGroupPatches = (
   patches: Array<Patch>,
@@ -253,6 +290,26 @@ const filterAndGroupPatches = (
             } as InsertBlockPatchGroup,
           ]
         case "put":
+          if (group.length === 1 && group[0].path[2] === "parents") {
+            return [
+              ...acc,
+              {
+                type: "updateBlockHierarchy",
+                patches: group,
+              } as UpdateBlockHierarchyPatchGroup,
+            ]
+          }
+
+          if (groupContainsOnlyTypeAndAttrs(group)) {
+            return [
+              ...acc,
+              {
+                type: "updateBlockTypeAndAttrs",
+                patches: group,
+              } as UpdateBlockTypeAndAttrsPatchGroup,
+            ]
+          }
+
           return [
             ...acc,
             {
@@ -513,20 +570,32 @@ const updateTransactionAndApplySpansForInsertBlockGroupOld = ({
   }
 }
 
-const updateTransactionAndApplySpansForInsertBlockGroup = ({
+const updateTransactionAndApplySpansForBlockPatchGroup = ({
   patchGroup,
   tx,
   path,
   adapter,
   spans,
 }: {
-  patchGroup: InsertBlockPatchGroup
+  patchGroup:
+    | InsertBlockPatchGroup
+    | UpdateBlockPatchGroup
+    | UpdateBlockHierarchyPatchGroup
+    | UpdateBlockTypeAndAttrsPatchGroup
   tx: Transaction
   path: Prop[]
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
-}): { tx: Transaction; spans: am.Span[] } => {
+}): {
+  tx: Transaction
+  spans: am.Span[]
+  change: {
+    start: number
+    endA: number
+    endB: number
+  } | null
+} => {
   const newSpans = applyPatchGroupSpans({
     patchGroup,
     initialSpans: spans,
@@ -541,6 +610,7 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
     return {
       tx,
       spans: newSpans,
+      change: null,
     }
   }
 
@@ -549,6 +619,46 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
     change.endA,
     pmDocAfter.slice(change.start, change.endB),
   )
+
+  return {
+    tx: updatedTx,
+    spans: newSpans,
+    change,
+  }
+}
+
+const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
+  patchGroup,
+  tx,
+  path,
+  adapter,
+  spans,
+  diffMode,
+}: {
+  patchGroup: UpdateBlockTypeAndAttrsPatchGroup
+  tx: Transaction
+  path: Prop[]
+  adapter: SchemaAdapter
+  spans: am.Span[]
+  diffMode: boolean
+}): { tx: Transaction; spans: am.Span[] } => {
+  const {
+    tx: updatedTx,
+    spans: newSpans,
+    change,
+  } = updateTransactionAndApplySpansForBlockPatchGroup({
+    patchGroup,
+    tx,
+    path,
+    adapter,
+    spans,
+    diffMode,
+  })
+
+  if (diffMode && change) {
+    const diffMark = adapter.schema.marks.diff_modify.create()
+    updatedTx.addMark(change.start, change.endB, diffMark)
+  }
 
   return {
     tx: updatedTx,
