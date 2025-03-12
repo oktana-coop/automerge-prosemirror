@@ -1,7 +1,8 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
-import { Slice } from "prosemirror-model"
-import { Transaction } from "prosemirror-state"
-import { amSpliceIdxToPmIdx } from "./traversal.js"
+import { ResolvedPos, Slice } from "prosemirror-model"
+import { Transaction, TextSelection, EditorState } from "prosemirror-state"
+import { wrapRangeInList, splitListItem } from "prosemirror-schema-list"
+import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
 import { applyPatchToSpans } from "./maintainSpans.js"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
 import { ReplaceStep } from "prosemirror-transform"
@@ -68,9 +69,10 @@ export default function (
   spans: am.Span[],
   patches: Array<Patch>,
   path: Prop[],
-  tx: Transaction,
+  state: EditorState,
   diffMode = false,
 ): Transaction {
+  const tx = state.tr
   const patchGroups = filterAndGroupPatches(patches, path)
 
   const result = patchGroups.reduce<{ tx: Transaction; spans: Array<am.Span> }>(
@@ -113,6 +115,7 @@ export default function (
           return updateTransactionAndApplySpansForInsertBlockGroup({
             patchGroup,
             tx: acc.tx,
+            state,
             path,
             adapter,
             spans: acc.spans,
@@ -394,12 +397,14 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
 const updateTransactionAndApplySpansForInsertBlockGroup = ({
   patchGroup,
   tx,
+  state,
   path,
   adapter,
   spans,
 }: {
   patchGroup: InsertBlockPatchGroup
   tx: Transaction
+  state: EditorState
   path: Prop[]
   adapter: SchemaAdapter
   spans: am.Span[]
@@ -436,6 +441,11 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
       "Invalid ProseMirror index when trying to insert a block from the patch",
     )
 
+  const resolvedPos = tx.doc.resolve(pos)
+  const nodeInPos = resolvedPos.nodeAfter
+  const nodeBefore = resolvedPos.nodeBefore
+  const pmDoc = pmDocFromSpans(adapter, spans)
+
   switch (blockType) {
     case "paragraph": {
       const node = adapter.schema.nodes.paragraph.create()
@@ -459,6 +469,49 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
       tx = tx.insert(pos, node)
       break
     }
+    case "unordered-list-item":
+    case "ordered-list-item": {
+      const listType =
+        blockType === "unordered-list-item" ? "bullet_list" : "ordered_list"
+      const listItemType = adapter.schema.nodes.list_item
+
+      if (nodeInPos) {
+        addWrapInListToTransaction({
+          tx,
+          adapter,
+          resolvedPos,
+          listType: "bullet_list",
+        })
+      } else {
+        if (
+          nodeBefore &&
+          nodeBefore.type.name === "text" &&
+          resolvedPos.node(resolvedPos.depth - 1).type.name === "list_item"
+        ) {
+          addSplitListItemToTransaction({
+            tx,
+            state,
+            adapter,
+            resolvedPos,
+          })
+        } else {
+          // Otherwise, create a new list and insert the list item into it
+          const listItem = listItemType.createAndFill()
+          if (!listItem) {
+            throw new Error("Failed to create list item")
+          }
+          const listNode = adapter.schema.nodes[listType].createAndFill(
+            null,
+            listItem,
+          )
+          if (!listNode) {
+            throw new Error(`Failed to create ${listType}`)
+          }
+          tx = tx.insert(pos, listNode)
+        }
+      }
+      break
+    }
     default:
       throw new Error(`Unsupported block type: ${blockType}`)
   }
@@ -471,4 +524,64 @@ const updateTransactionAndApplySpansForInsertBlockGroup = ({
       path,
     }),
   }
+}
+
+const addWrapInListToTransaction = ({
+  tx,
+  adapter,
+  resolvedPos,
+  listType,
+}: {
+  tx: Transaction
+  adapter: SchemaAdapter
+  resolvedPos: ResolvedPos
+  listType: "bullet_list" | "ordered_list"
+}) => {
+  const range = resolvedPos.blockRange()
+
+  if (!range) {
+    throw new Error(`Invalid range at position ${resolvedPos}`)
+  }
+
+  tx.setSelection(new TextSelection(resolvedPos))
+
+  if (!wrapRangeInList(tx, range, adapter.schema.nodes[listType])) {
+    throw new Error(
+      `Failed to wrap position ${resolvedPos} in list of type ${listType}`,
+    )
+  }
+
+  return tx
+}
+
+const addSplitListItemToTransaction = ({
+  tx,
+  state,
+  resolvedPos,
+}: {
+  tx: Transaction
+  state: EditorState
+  adapter: SchemaAdapter
+  resolvedPos: ResolvedPos
+}) => {
+  tx.setSelection(new TextSelection(resolvedPos))
+
+  const tempState = EditorState.create({
+    doc: tx.doc,
+    selection: tx.selection,
+    schema: state.schema,
+  })
+
+  const success = splitListItem(state.schema.nodes.list_item)(
+    tempState,
+    splitTx => {
+      splitTx.steps.forEach(step => tx.step(step)) // Merge steps into original transaction
+    },
+  )
+
+  if (!success) {
+    throw new Error(`Failed to split list item in position ${resolvedPos.pos}`)
+  }
+
+  return tx
 }

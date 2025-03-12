@@ -23,7 +23,7 @@ export function patchesToTr<T>({
 }): Transaction {
   const headsBefore = automerge.getHeads(before)
   const spans = automerge.spans(automerge.view(after, headsBefore), path)
-  const tr = amToPm(adapter, spans, patches, path, state.tr, diffMode)
+  const tr = amToPm(adapter, spans, patches, path, state, diffMode)
   tr.setMeta("addToHistory", false) // remote changes should not be added to local stack
   return tr
 }
