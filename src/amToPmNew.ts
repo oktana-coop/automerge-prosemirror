@@ -1,6 +1,7 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
 import { Slice } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
+import { Decoration, DecorationSet } from "prosemirror-view"
 import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
 import { applyPatchToSpans } from "./maintainSpans.js"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
@@ -8,6 +9,10 @@ import { ReplaceStep } from "prosemirror-transform"
 import { pmMarksFromAmMarks, SchemaAdapter } from "./schema.js"
 import { charPath, patchContentToFragment, findDiff } from "./amToPm.js"
 import { ChangeSet } from "prosemirror-changeset"
+
+export const diffInsert = "bg-green-300"
+export const diffModify = "bg-purple-100"
+export const diffDelete = "bg-red-200"
 
 export const isBlockPatch = (patch: Patch): boolean => {
   return patch.action === "insert" || patch.action === "put"
@@ -92,6 +97,8 @@ export default function (
   const pmDocBefore = tx.doc
   const patchGroups = filterAndGroupPatches(patches, path)
 
+  const decorations: Decoration[] = []
+
   const result = patchGroups.reduce<{ tx: Transaction; spans: Array<am.Span> }>(
     (acc, patchGroup) => {
       switch (patchGroup.type) {
@@ -102,6 +109,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
+            decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromSplicePatch,
@@ -113,6 +121,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
+            decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromMarkPatch,
@@ -124,6 +133,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
+            decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromDelPatch,
@@ -138,6 +148,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
+            decorations,
           })
         case "updateBlockTypeAndAttrs":
           return updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup(
@@ -148,6 +159,7 @@ export default function (
               adapter,
               spans: acc.spans,
               diffMode,
+              decorations,
             },
           )
         default:
@@ -175,13 +187,20 @@ export default function (
     changes.forEach(({ fromA, toA, fromB, toB, inserted, deleted }) => {
       let nextInsertMarkStart = fromB
       inserted.forEach(span => {
-        const diffMark = adapter.schema.marks.diff_insert.create()
-        const insertMarkEnd = nextInsertMarkStart + span.length
-        result.tx.addMark(nextInsertMarkStart, insertMarkEnd, diffMark)
-        nextInsertMarkStart = insertMarkEnd
+        const decoration = Decoration.inline(
+          nextInsertMarkStart,
+          nextInsertMarkStart + span.length,
+          { class: diffInsert },
+        )
+        decorations.push(decoration)
+        nextInsertMarkStart += span.length
       })
     })
   }
+
+  // Apply decorations to the transaction
+  const decorationSet = DecorationSet.create(result.tx.doc, decorations)
+  result.tx.setMeta("decorations", decorationSet)
 
   return result.tx
 }
@@ -331,6 +350,7 @@ type UpdateTransactionAndApplySpansForNonBlockPatchGroup = (context: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }) => (
   groupArgs:
     | {
@@ -349,7 +369,7 @@ type UpdateTransactionAndApplySpansForNonBlockPatchGroup = (context: {
 
 const updateTransactionAndApplySpansForNonBlockPatchGroup: UpdateTransactionAndApplySpansForNonBlockPatchGroup =
 
-    ({ tx, path, adapter, spans, diffMode }) =>
+    ({ tx, path, adapter, spans, diffMode, decorations }) =>
     ({ patchGroup, updateTransactionFromPatchFn }) =>
       patchGroup.patches.reduce<{
         tx: Transaction
@@ -364,6 +384,7 @@ const updateTransactionAndApplySpansForNonBlockPatchGroup: UpdateTransactionAndA
             adapter,
             spans: groupAcc.spans,
             diffMode,
+            decorations,
           })
 
           const newSpans = applyPatchToSpans(path, groupAcc.spans, patch)
@@ -380,6 +401,7 @@ type UpdateTransactionFromSplicePatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }) => Transaction
 
 const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
@@ -389,6 +411,7 @@ const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
   adapter,
   spans,
   diffMode,
+  decorations,
 }) => {
   const index = charPath(path, patch.path)
   if (index === null) return tx
@@ -397,8 +420,10 @@ const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
   const content = patchContentToFragment(adapter, patch.value, patch.marks)
   tx = tx.step(new ReplaceStep(pmIdx, pmIdx, new Slice(content, 0, 0)))
   if (diffMode) {
-    const diffMark = adapter.schema.marks.diff_insert.create()
-    tx = tx.addMark(pmIdx, pmIdx + content.size, diffMark)
+    const decoration = Decoration.inline(pmIdx, pmIdx + content.size, {
+      class: diffInsert,
+    })
+    decorations.push(decoration)
   }
   return tx
 }
@@ -410,6 +435,7 @@ type UpdateTransactionFromMarkPatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }) => Transaction
 
 const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
@@ -419,6 +445,7 @@ const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
   adapter,
   spans,
   diffMode,
+  decorations,
 }) => {
   if (isArrayEqual(patch.path, path)) {
     for (const mark of patch.marks) {
@@ -434,8 +461,10 @@ const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
           : adapter.unknownMark
         tx = tx.removeMark(pmStart, pmEnd, markType)
         if (diffMode) {
-          const diffMark = adapter.schema.marks.diff_modify.create()
-          tx = tx.addMark(pmStart, pmEnd, diffMark)
+          const decoration = Decoration.inline(pmStart, pmEnd, {
+            class: diffModify,
+          })
+          decorations.push(decoration)
         }
       } else {
         const pmMarks = pmMarksFromAmMarks(adapter, {
@@ -444,8 +473,10 @@ const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
         for (const pmMark of pmMarks) {
           tx = tx.addMark(pmStart, pmEnd, pmMark)
           if (diffMode) {
-            const diffMark = adapter.schema.marks.diff_modify.create()
-            tx = tx.addMark(pmStart, pmEnd, diffMark)
+            const decoration = Decoration.inline(pmStart, pmEnd, {
+              class: diffModify,
+            })
+            decorations.push(decoration)
           }
         }
       }
@@ -461,6 +492,7 @@ type UpdateTransactionFromDelPatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }) => Transaction
 
 const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
@@ -470,6 +502,7 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   adapter,
   spans,
   diffMode,
+  decorations,
 }) => {
   const index = charPath(path, patch.path)
   if (index === null) return tx
@@ -479,8 +512,10 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   if (end == null) throw new Error("Invalid end index in deletion")
 
   if (diffMode) {
-    const diffMark = adapter.schema.marks.diff_delete.create()
-    tx = tx.addMark(start, end, diffMark)
+    const decoration = Decoration.inline(start, end, {
+      class: diffDelete,
+    })
+    decorations.push(decoration)
   } else {
     tx = tx.delete(start, end)
   }
@@ -587,6 +622,7 @@ const updateTransactionAndApplySpansForBlockPatchGroup = ({
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }): {
   tx: Transaction
   spans: am.Span[]
@@ -634,6 +670,7 @@ const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
   adapter,
   spans,
   diffMode,
+  decorations,
 }: {
   patchGroup: UpdateBlockTypeAndAttrsPatchGroup
   tx: Transaction
@@ -641,6 +678,7 @@ const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
+  decorations: Decoration[]
 }): { tx: Transaction; spans: am.Span[] } => {
   const {
     tx: updatedTx,
@@ -653,11 +691,14 @@ const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
     adapter,
     spans,
     diffMode,
+    decorations,
   })
 
   if (diffMode && change) {
-    const diffMark = adapter.schema.marks.diff_modify.create()
-    updatedTx.addMark(change.start, change.endB, diffMark)
+    const decoration = Decoration.inline(change.start, change.endB, {
+      class: diffModify,
+    })
+    decorations.push(decoration)
   }
 
   return {
