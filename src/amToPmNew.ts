@@ -97,9 +97,11 @@ export default function (
   const pmDocBefore = tx.doc
   const patchGroups = filterAndGroupPatches(patches, path)
 
-  const decorations: Decoration[] = []
-
-  const result = patchGroups.reduce<{ tx: Transaction; spans: Array<am.Span> }>(
+  const result = patchGroups.reduce<{
+    tx: Transaction
+    spans: Array<am.Span>
+    decorations: Decoration[]
+  }>(
     (acc, patchGroup) => {
       switch (patchGroup.type) {
         case "splice":
@@ -109,7 +111,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
-            decorations,
+            decorations: acc.decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromSplicePatch,
@@ -121,7 +123,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
-            decorations,
+            decorations: acc.decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromMarkPatch,
@@ -133,7 +135,7 @@ export default function (
             adapter,
             spans: acc.spans,
             diffMode,
-            decorations,
+            decorations: acc.decorations,
           })({
             patchGroup,
             updateTransactionFromPatchFn: updateTransactionFromDelPatch,
@@ -147,8 +149,7 @@ export default function (
             path,
             adapter,
             spans: acc.spans,
-            diffMode,
-            decorations,
+            decorations: acc.decorations,
           })
         case "updateBlockTypeAndAttrs":
           return updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup(
@@ -159,22 +160,23 @@ export default function (
               adapter,
               spans: acc.spans,
               diffMode,
-              decorations,
+              decorations: acc.decorations,
             },
           )
         default:
           // No update to the ProseMirror transaction but we still update the Automerge spans.
           return {
-            tx,
+            tx: acc.tx,
             spans: applyPatchGroupSpans({
               patchGroup,
               initialSpans: acc.spans,
               path,
             }),
+            decorations: acc.decorations,
           }
       }
     },
-    { tx, spans },
+    { tx, spans, decorations: [] },
   )
 
   if (diffMode && patchGroups.some(isBlockPatchGroupWithStructureChanges)) {
@@ -184,22 +186,37 @@ export default function (
       [],
     )
 
-    changes.forEach(({ fromA, toA, fromB, toB, inserted, deleted }) => {
-      let nextInsertMarkStart = fromB
-      inserted.forEach(span => {
-        const decoration = Decoration.inline(
-          nextInsertMarkStart,
-          nextInsertMarkStart + span.length,
-          { class: diffInsert },
+    const newDecorations = changes.reduce<Decoration[]>(
+      (acc, { fromB, inserted }) => {
+        const { decorations: newInsertDecorations } = inserted.reduce<{
+          decorations: Decoration[]
+          nextInsertMarkStart: number
+        }>(
+          (acc, span) => {
+            const decoration = Decoration.inline(
+              acc.nextInsertMarkStart,
+              acc.nextInsertMarkStart + span.length,
+              { class: diffInsert },
+            )
+
+            return {
+              decorations: acc.decorations.concat([decoration]),
+              nextInsertMarkStart: acc.nextInsertMarkStart + span.length,
+            }
+          },
+          { decorations: [], nextInsertMarkStart: fromB },
         )
-        decorations.push(decoration)
-        nextInsertMarkStart += span.length
-      })
-    })
+
+        return acc.concat(newInsertDecorations)
+      },
+      [],
+    )
+
+    result.decorations = result.decorations.concat(newDecorations)
   }
 
   // Apply decorations to the transaction
-  const decorationSet = DecorationSet.create(result.tx.doc, decorations)
+  const decorationSet = DecorationSet.create(result.tx.doc, result.decorations)
   result.tx.setMeta("decorations", decorationSet)
 
   return result.tx
@@ -365,7 +382,7 @@ type UpdateTransactionAndApplySpansForNonBlockPatchGroup = (context: {
         patchGroup: DelPatchGroup
         updateTransactionFromPatchFn: UpdateTransactionFromDelPatchFn
       },
-) => { tx: Transaction; spans: am.Span[] }
+) => { tx: Transaction; spans: am.Span[]; decorations: Decoration[] }
 
 const updateTransactionAndApplySpansForNonBlockPatchGroup: UpdateTransactionAndApplySpansForNonBlockPatchGroup =
 
@@ -374,24 +391,31 @@ const updateTransactionAndApplySpansForNonBlockPatchGroup: UpdateTransactionAndA
       patchGroup.patches.reduce<{
         tx: Transaction
         spans: Array<am.Span>
+        decorations: Array<Decoration>
       }>(
         (groupAcc, patch) => {
-          const updatedTx = updateTransactionFromPatchFn({
-            // @ts-expect-error TS cannot infer that the type is correct here according to the group args type
-            patch,
-            tx: groupAcc.tx,
-            path,
-            adapter,
-            spans: groupAcc.spans,
-            diffMode,
-            decorations,
-          })
+          const { tx: updatedTx, decorations: newDecorations } =
+            updateTransactionFromPatchFn({
+              // @ts-expect-error TS cannot infer that the type is correct here according to the group args type
+              patch,
+              tx: groupAcc.tx,
+              path,
+              adapter,
+              spans: groupAcc.spans,
+              diffMode,
+              decorations: groupAcc.decorations,
+            })
 
           const newSpans = applyPatchToSpans(path, groupAcc.spans, patch)
+          const updatedDecorations = decorations.concat(newDecorations)
 
-          return { tx: updatedTx, spans: newSpans }
+          return {
+            tx: updatedTx,
+            spans: newSpans,
+            decorations: updatedDecorations,
+          }
         },
-        { tx, spans },
+        { tx, spans, decorations: [] },
       )
 
 type UpdateTransactionFromSplicePatchFn = (args: {
@@ -401,8 +425,7 @@ type UpdateTransactionFromSplicePatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
-  decorations: Decoration[]
-}) => Transaction
+}) => { tx: Transaction; decorations: Decoration[] }
 
 const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
   patch,
@@ -411,21 +434,32 @@ const updateTransactionFromSplicePatch: UpdateTransactionFromSplicePatchFn = ({
   adapter,
   spans,
   diffMode,
-  decorations,
 }) => {
   const index = charPath(path, patch.path)
-  if (index === null) return tx
+  if (index === null) {
+    return {
+      tx,
+      decorations: [],
+    }
+  }
+
   const pmIdx = amSpliceIdxToPmIdx(adapter, spans, index)
   if (pmIdx == null) throw new Error("Invalid index")
   const content = patchContentToFragment(adapter, patch.value, patch.marks)
   tx = tx.step(new ReplaceStep(pmIdx, pmIdx, new Slice(content, 0, 0)))
-  if (diffMode) {
-    const decoration = Decoration.inline(pmIdx, pmIdx + content.size, {
-      class: diffInsert,
-    })
-    decorations.push(decoration)
+
+  const decorations = diffMode
+    ? [
+        Decoration.inline(pmIdx, pmIdx + content.size, {
+          class: diffInsert,
+        }),
+      ]
+    : []
+
+  return {
+    tx,
+    decorations,
   }
-  return tx
 }
 
 type UpdateTransactionFromMarkPatchFn = (args: {
@@ -435,8 +469,7 @@ type UpdateTransactionFromMarkPatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
-  decorations: Decoration[]
-}) => Transaction
+}) => { tx: Transaction; decorations: Decoration[] }
 
 const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
   patch,
@@ -445,8 +478,9 @@ const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
   adapter,
   spans,
   diffMode,
-  decorations,
 }) => {
+  const decorations = []
+
   if (isArrayEqual(patch.path, path)) {
     for (const mark of patch.marks) {
       const pmStart = amSpliceIdxToPmIdx(adapter, spans, mark.start)
@@ -482,7 +516,8 @@ const updateTransactionFromMarkPatch: UpdateTransactionFromMarkPatchFn = ({
       }
     }
   }
-  return tx
+
+  return { tx, decorations }
 }
 
 type UpdateTransactionFromDelPatchFn = (args: {
@@ -492,8 +527,7 @@ type UpdateTransactionFromDelPatchFn = (args: {
   adapter: SchemaAdapter
   spans: am.Span[]
   diffMode: boolean
-  decorations: Decoration[]
-}) => Transaction
+}) => { tx: Transaction; decorations: Decoration[] }
 
 const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   patch,
@@ -502,10 +536,11 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   adapter,
   spans,
   diffMode,
-  decorations,
 }) => {
   const index = charPath(path, patch.path)
-  if (index === null) return tx
+  if (index === null) {
+    return { tx, decorations: [] }
+  }
   const start = amSpliceIdxToPmIdx(adapter, spans, index)
   if (start == null) throw new Error("Invalid start index in deletion")
   const end = amSpliceIdxToPmIdx(adapter, spans, index + (patch.length || 1))
@@ -515,12 +550,19 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
     const decoration = Decoration.inline(start, end, {
       class: diffDelete,
     })
-    decorations.push(decoration)
+
+    return {
+      tx,
+      decorations: [decoration],
+    }
   } else {
     tx = tx.delete(start, end)
-  }
 
-  return tx
+    return {
+      tx,
+      decorations: [],
+    }
+  }
 }
 
 const updateTransactionAndApplySpansForInsertBlockGroupOld = ({
@@ -611,6 +653,7 @@ const updateTransactionAndApplySpansForBlockPatchGroup = ({
   path,
   adapter,
   spans,
+  decorations,
 }: {
   patchGroup:
     | InsertBlockPatchGroup
@@ -621,11 +664,11 @@ const updateTransactionAndApplySpansForBlockPatchGroup = ({
   path: Prop[]
   adapter: SchemaAdapter
   spans: am.Span[]
-  diffMode: boolean
   decorations: Decoration[]
 }): {
   tx: Transaction
   spans: am.Span[]
+  decorations: Decoration[]
   change: {
     start: number
     endA: number
@@ -646,6 +689,7 @@ const updateTransactionAndApplySpansForBlockPatchGroup = ({
     return {
       tx,
       spans: newSpans,
+      decorations,
       change: null,
     }
   }
@@ -659,6 +703,7 @@ const updateTransactionAndApplySpansForBlockPatchGroup = ({
   return {
     tx: updatedTx,
     spans: newSpans,
+    decorations,
     change,
   }
 }
@@ -679,7 +724,7 @@ const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
   spans: am.Span[]
   diffMode: boolean
   decorations: Decoration[]
-}): { tx: Transaction; spans: am.Span[] } => {
+}): { tx: Transaction; spans: am.Span[]; decorations: Decoration[] } => {
   const {
     tx: updatedTx,
     spans: newSpans,
@@ -690,19 +735,21 @@ const updateTransactionAndApplySpansForUpdateBlockTypeAndAttrsPatchGroup = ({
     path,
     adapter,
     spans,
-    diffMode,
     decorations,
   })
 
-  if (diffMode && change) {
-    const decoration = Decoration.inline(change.start, change.endB, {
-      class: diffModify,
-    })
-    decorations.push(decoration)
-  }
+  const newDecorations =
+    diffMode && change
+      ? [
+          Decoration.inline(change.start, change.endB, {
+            class: diffModify,
+          }),
+        ]
+      : []
 
   return {
     tx: updatedTx,
     spans: newSpans,
+    decorations: decorations.concat(newDecorations),
   }
 }
