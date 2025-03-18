@@ -26,7 +26,6 @@ export default function (
   patches: Array<Patch>,
   path: Prop[],
   tx: Transaction,
-  diffMode = false,
 ): Transaction {
   const gathered = gatherPatches(path, patches)
   let result = tx
@@ -34,72 +33,41 @@ export default function (
     if (patchGroup.type === "text") {
       for (const patch of patchGroup.patches) {
         if (patch.action === "splice") {
-          result = handleSplice(
-            adapter,
-            spansAtStart,
-            patch,
-            path,
-            result,
-            diffMode,
-          )
+          result = handleSplice(adapter, spansAtStart, patch, path, result)
+          //console.log(`patch: ${JSON.stringify(patch)}`)
+          //console.log(`spans before patch: ${JSON.stringify(spansAtStart, null, 2)}`)
           patchSpans(path, spansAtStart, patch)
+          //console.log("patched spans", spansAtStart)
         } else if (patch.action === "del") {
           const patchIndex = patch.path[patch.path.length - 1] as number
           const block = findBlockAtCharIdx(spansAtStart, patchIndex)
           if (block != null) {
-            result = handleDeleteBlock(
+            result = handleBlockChange(
               adapter,
               path,
               spansAtStart,
-              patch,
+              patchIndex,
+              [patch],
               result,
-              diffMode,
             )
           } else {
-            result = handleDelete(
-              adapter,
-              spansAtStart,
-              patch,
-              path,
-              result,
-              diffMode,
-            )
+            result = handleDelete(adapter, spansAtStart, patch, path, result)
           }
           patchSpans(path, spansAtStart, patch)
         } else if (patch.action === "mark") {
-          result = handleMark(
-            adapter,
-            spansAtStart,
-            patch,
-            path,
-            result,
-            diffMode,
-          )
+          result = handleMark(adapter, spansAtStart, patch, path, result)
           patchSpans(path, spansAtStart, patch)
         }
       }
     } else {
-      const nonPutPatches = patchGroup.patches.filter(
-        patch => patch.action !== "put",
+      result = handleBlockChange(
+        adapter,
+        path,
+        spansAtStart,
+        patchGroup.index,
+        patchGroup.patches,
+        result,
       )
-
-      if (nonPutPatches.length > 0) {
-        result = handleBlockChange(
-          adapter,
-          path,
-          spansAtStart,
-          patchGroup.index,
-          patchGroup.patches,
-          result,
-          diffMode,
-        )
-      } else {
-        for (const patch of patches) {
-          patchSpans(path, spansAtStart, patch)
-        }
-
-        return result
-      }
     }
   }
   return result
@@ -111,7 +79,6 @@ export function handleSplice(
   patch: SpliceTextPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean,
 ): Transaction {
   const index = charPath(path, patch.path)
   if (index === null) return tx
@@ -119,10 +86,6 @@ export function handleSplice(
   if (pmIdx == null) throw new Error("Invalid index")
   const content = patchContentToFragment(adapter, patch.value, patch.marks)
   tx = tx.step(new ReplaceStep(pmIdx, pmIdx, new Slice(content, 0, 0)))
-  if (diffMode) {
-    const diffMark = adapter.schema.marks.diff_insert.create()
-    tx = tx.addMark(pmIdx, pmIdx + content.size, diffMark)
-  }
   return tx
 }
 
@@ -132,19 +95,13 @@ function handleDelete(
   patch: DelPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean,
 ): Transaction {
   const index = charPath(path, patch.path)
   if (index === null) return tx
   const start = amSpliceIdxToPmIdx(adapter, spans, index)
   if (start == null) throw new Error("Invalid index")
   const end = start + (patch.length || 1)
-  if (diffMode) {
-    const diffMark = adapter.schema.marks.diff_delete.create()
-    return tx.addMark(start, end, diffMark)
-  } else {
-    return tx.delete(start, end)
-  }
+  return tx.delete(start, end)
 }
 
 function handleMark(
@@ -153,7 +110,6 @@ function handleMark(
   patch: MarkPatch,
   path: Prop[],
   tx: Transaction,
-  diffMode: boolean,
 ) {
   if (isArrayEqual(patch.path, path)) {
     for (const mark of patch.marks) {
@@ -168,20 +124,12 @@ function handleMark(
           ? markMapping.prosemirrorMark
           : adapter.unknownMark
         tx = tx.removeMark(pmStart, pmEnd, markType)
-        if (diffMode) {
-          const diffMark = adapter.schema.marks.diff_modify.create()
-          tx = tx.addMark(pmStart, pmEnd, diffMark)
-        }
       } else {
         const pmMarks = pmMarksFromAmMarks(adapter, {
           [mark.name]: mark.value,
         })
         for (const pmMark of pmMarks) {
           tx = tx.addMark(pmStart, pmEnd, pmMark)
-          if (diffMode) {
-            const diffMark = adapter.schema.marks.diff_modify.create()
-            tx = tx.addMark(pmStart, pmEnd, diffMark)
-          }
         }
       }
     }
@@ -196,12 +144,13 @@ export function handleBlockChange(
   _blockIdx: number,
   patches: am.Patch[],
   tx: Transaction,
-  diffMode: boolean,
 ): Transaction {
   for (const patch of patches) {
     patchSpans(atPath, spans, patch)
   }
+  //console.log("spans after block change", spans)
   const docAfter = pmDocFromSpans(adapter, spans)
+  //console.log("doc after block change", docAfter)
   const change = findDiff(tx.doc.content, docAfter.content)
   if (change == null) return tx
 
@@ -222,10 +171,6 @@ export function handleBlockChange(
       // Deletion
       handledByInline = true
       tx = tx.delete(chFrom, chTo)
-      if (diffMode) {
-        const diffMark = adapter.schema.marks.diff_delete.create()
-        tx = tx.addMark(chFrom, chTo, diffMark)
-      }
     } else if (
       $from.parent.child($from.index()).isText &&
       $from.index() == $to.index() - ($to.textOffset ? 0 : 1)
@@ -237,43 +182,12 @@ export function handleBlockChange(
         $to.parentOffset,
       )
       tx = tx.insertText(text, chFrom, chTo)
-      if (diffMode) {
-        const diffMark = adapter.schema.marks.diff_insert.create()
-        tx = tx.addMark(chFrom, chFrom + text.length, diffMark)
-      }
     }
   }
-
   if (!handledByInline) {
     tx = tx.replace(chFrom, chTo, docAfter.slice(change.start, change.endB))
   }
 
-  return tx
-}
-
-function handleDeleteBlock(
-  adapter: SchemaAdapter,
-  atPath: Prop[],
-  spans: am.Span[],
-  patch: DelPatch,
-  tx: Transaction,
-  diffMode: boolean,
-): Transaction {
-  const index = charPath(atPath, patch.path)
-  if (index === null) return tx
-  const start = amSpliceIdxToPmIdx(adapter, spans, index)
-  if (start == null) throw new Error("Invalid start index in block deletion")
-  const end = amSpliceIdxToPmIdx(adapter, spans, index + (patch.length || 1))
-  if (end == null) throw new Error("Invalid end index in block deletion")
-
-  if (diffMode) {
-    const diffMark = adapter.schema.marks.diff_delete.create()
-    tx = tx.addMark(start, end, diffMark)
-  } else {
-    tx = tx.delete(start, end)
-  }
-
-  patchSpans(atPath, spans, patch)
   return tx
 }
 
@@ -358,10 +272,7 @@ type BlockPatches = {
   patches: am.Patch[]
 }
 
-export function gatherPatches(
-  textPath: am.Prop[],
-  diff: am.Patch[],
-): GatheredPatch[] {
+function gatherPatches(textPath: am.Prop[], diff: am.Patch[]): GatheredPatch[] {
   const result: GatheredPatch[] = []
 
   type State =
