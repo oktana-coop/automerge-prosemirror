@@ -1,5 +1,5 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
-import { Slice, Node, DOMSerializer } from "prosemirror-model"
+import { Slice, Node as PMNode, DOMSerializer } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
 import { Decoration, DecorationSet } from "prosemirror-view"
 import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
@@ -535,32 +535,40 @@ const createDeleteDecorationForNode = ({
   adapter,
 }: {
   start: number
-  node: Node
+  node: PMNode
   adapter: SchemaAdapter
 }): Decoration => {
-  const createInlineElement = (docFragment: globalThis.Node) => {
+  type DOMNode = globalThis.Node
+  type DOMText = globalThis.Text
+
+  const createInlineElement = (docFragment: DOMNode) => {
     const element = document.createElement("span")
     element.className = diffDelete
     element.appendChild(docFragment)
     return element
   }
 
-  const createBlockElement = (docFragment: globalThis.Node) => {
+  const createBlockElement = (docFragment: DOMNode) => {
     const element = document.createElement("div")
     element.appendChild(docFragment)
 
-    element.querySelectorAll("*").forEach(el => {
-      if (el instanceof HTMLElement) {
-        const text = el.innerText.trim()
-        if (text) {
-          const span = document.createElement("span")
-          span.className = diffDelete
-          span.innerText = text
-          el.innerText = ""
-          el.appendChild(span)
-        }
-      }
-    })
+    const getTextNodes = (node: DOMNode): DOMText[] =>
+      [...node.childNodes].flatMap(
+        child =>
+          child.nodeType === Node.TEXT_NODE && child.nodeValue?.trim()
+            ? [child as DOMText] // Type assertion since we check `nodeType`
+            : getTextNodes(child), // Recursively get all text nodes
+      )
+
+    const wrapNode = (textNode: Text): void => {
+      const span = document.createElement("span")
+      span.className = diffDelete
+      span.textContent = textNode.nodeValue
+      textNode.replaceWith(span)
+    }
+
+    getTextNodes(element).forEach(wrapNode)
+
     return element
   }
 
@@ -584,7 +592,7 @@ const createDeleteDecorations = ({
   start,
   end,
 }: {
-  doc: Node
+  doc: PMNode
   adapter: SchemaAdapter
   start: number
   end: number
