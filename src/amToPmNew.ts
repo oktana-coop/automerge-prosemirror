@@ -1,5 +1,5 @@
 import { next as am, Patch, type Prop } from "@automerge/automerge/slim"
-import { Slice } from "prosemirror-model"
+import { Slice, Node, DOMSerializer } from "prosemirror-model"
 import { Transaction } from "prosemirror-state"
 import { Decoration, DecorationSet } from "prosemirror-view"
 import { amSpliceIdxToPmIdx, pmDocFromSpans } from "./traversal.js"
@@ -529,6 +529,89 @@ type UpdateTransactionFromDelPatchFn = (args: {
   diffMode: boolean
 }) => { tx: Transaction; decorations: Decoration[] }
 
+const createDeleteDecorationForNode = ({
+  start,
+  node,
+  adapter,
+}: {
+  start: number
+  node: Node
+  adapter: SchemaAdapter
+}): Decoration => {
+  const createInlineElement = (docFragment: globalThis.Node) => {
+    const element = document.createElement("span")
+    element.className = diffDelete
+    element.appendChild(docFragment)
+    return element
+  }
+
+  const createBlockElement = (docFragment: globalThis.Node) => {
+    const element = document.createElement("div")
+    element.appendChild(docFragment)
+
+    element.querySelectorAll("*").forEach(el => {
+      if (el instanceof HTMLElement) {
+        const text = el.innerText.trim()
+        if (text) {
+          const span = document.createElement("span")
+          span.className = diffDelete
+          span.innerText = text
+          el.innerText = ""
+          el.appendChild(span)
+        }
+      }
+    })
+    return element
+  }
+
+  const decoration = Decoration.widget(start, () => {
+    const domSerializer = DOMSerializer.fromSchema(adapter.schema)
+    const docFragment = domSerializer.serializeNode(node)
+
+    if (node.isInline) {
+      return createInlineElement(docFragment)
+    }
+
+    return createBlockElement(docFragment)
+  })
+
+  return decoration
+}
+
+const createDeleteDecorations = ({
+  doc,
+  adapter,
+  start,
+  end,
+}: {
+  doc: Node
+  adapter: SchemaAdapter
+  start: number
+  end: number
+}): Decoration[] => {
+  const slice = doc.slice(
+    Math.min(start, doc.content.size),
+    Math.min(end, doc.content.size),
+  )
+
+  const { decorations } = slice.content.content.reduce<{
+    decorations: Decoration[]
+    nextDecorationStart: number
+  }>(
+    (acc, node) => {
+      const decoration = createDeleteDecorationForNode({ start, node, adapter })
+
+      return {
+        decorations: acc.decorations.concat([decoration]),
+        nextDecorationStart: acc.nextDecorationStart + node.nodeSize,
+      }
+    },
+    { decorations: [], nextDecorationStart: start },
+  )
+
+  return decorations
+}
+
 const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   patch,
   tx,
@@ -546,22 +629,15 @@ const updateTransactionFromDelPatch: UpdateTransactionFromDelPatchFn = ({
   const end = amSpliceIdxToPmIdx(adapter, spans, index + (patch.length || 1))
   if (end == null) throw new Error("Invalid end index in deletion")
 
-  if (diffMode) {
-    const decoration = Decoration.inline(start, end, {
-      class: diffDelete,
-    })
+  const decorations = diffMode
+    ? createDeleteDecorations({ doc: tx.doc, adapter, start, end })
+    : []
 
-    return {
-      tx,
-      decorations: [decoration],
-    }
-  } else {
-    tx = tx.delete(start, end)
+  tx = tx.delete(start, end)
 
-    return {
-      tx,
-      decorations: [],
-    }
+  return {
+    tx,
+    decorations,
   }
 }
 
