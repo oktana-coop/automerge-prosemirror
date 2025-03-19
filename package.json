@@ -1,5 +1,5 @@
 {
-  "name": "@automerge/prosemirror",
+  "name": "@oktana-cooperative/automerge-prosemirror",
   "version": "0.0.13",
   "license": "MIT",
   "scripts": {
