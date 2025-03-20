@@ -1,6 +1,6 @@
 {
-  "name": "@oktana-cooperative/automerge-prosemirror",
-  "version": "0.0.13",
+  "name": "@oktana-coop/automerge-prosemirror",
+  "version": "0.0.13-1",
   "license": "MIT",
   "scripts": {
     "prettier": "prettier '**/*.{js,ts,tsx,json}' --check",
