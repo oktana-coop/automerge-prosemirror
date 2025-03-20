@@ -12,6 +12,12 @@
     "playground:preview": "vite preview playground",
     "mocha": "node --experimental-specifier-resolution=node --experimental-loader=ts-node/esm ./node_modules/.bin/mocha ./test/**/*.spec.ts"
   },
+  "publishConfig": {
+    "@oktana-coop:registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "url": "https://github.com/oktana-coop/automerge-prosemirror"
+  },
   "type": "module",
   "main": "dist/index.js",
   "files": [
