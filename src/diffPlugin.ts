@@ -12,12 +12,18 @@ export const diffPlugin = <T>({
   docAfter,
   path,
   patches,
+  decorationClasses,
 }: {
   adapter: SchemaAdapter
   docBefore: am.Doc<T>
   docAfter: am.Doc<T>
   path: am.Prop[]
   patches: am.Patch[]
+  decorationClasses: {
+    insert: string
+    modify: string
+    delete: string
+  }
 }) => {
   const plugin = new Plugin({
     key: diffPluginKey,
@@ -32,6 +38,7 @@ export const diffPlugin = <T>({
         patches,
         state: editorView.state,
         diffMode: true,
+        diffDecorationClasses: decorationClasses,
       })
 
       editorView.dispatch(tr)
