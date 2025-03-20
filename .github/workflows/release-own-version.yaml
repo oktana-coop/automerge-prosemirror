@@ -2,7 +2,7 @@ name: Publish own Package to Github's npm registry
 on:
   # Runs on pushes targeting the "release" branch
   push:
-    branches: ["release"]
+    branches: ["release", "release-package-publishing"]
 jobs:
   build:
     runs-on: ubuntu-latest
