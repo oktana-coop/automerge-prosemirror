@@ -1,8 +1,8 @@
-name: Publish own Package to Github's npm registry
+name: Publish own Package to Github's npm registry as pre-release
 on:
   # Runs on pushes targeting the "release" branch
   push:
-    branches: ["release"]
+    branches: ["pre-release"]
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,7 +15,7 @@ jobs:
           registry-url: "https://npm.pkg.github.com"
       - run: npm ci
       - run: npm run build
-      - name: "npm publish release"
-        run: npm publish
+      - name: "npm publish pre-release"
+        run: npm publish --tag next
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
