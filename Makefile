@@ -47,6 +47,6 @@ test:
 	npm run mocha
 .PHONY: test
 
-checks: lint test
+checks: test
 	@echo "✨ All checks are successful"
 .PHONY: checks

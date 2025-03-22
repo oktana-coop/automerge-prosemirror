@@ -18,4 +18,4 @@ jobs:
       - name: "npm publish release"
         run: npm publish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          OKTANA_NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
