@@ -1,6 +1,6 @@
 {
-  "name": "@automerge/prosemirror",
-  "version": "0.0.13",
+  "name": "@oktana-coop/automerge-prosemirror",
+  "version": "0.0.13-2",
   "license": "MIT",
   "scripts": {
     "prettier": "prettier '**/*.{js,ts,tsx,json}' --check",
@@ -11,6 +11,12 @@
     "playground:build": "vite build playground",
     "playground:preview": "vite preview playground",
     "mocha": "node --experimental-specifier-resolution=node --experimental-loader=ts-node/esm ./node_modules/.bin/mocha ./test/**/*.spec.ts"
+  },
+  "publishConfig": {
+    "@oktana-coop:registry": "https://npm.pkg.github.com"
+  },
+  "repository": {
+    "url": "https://github.com/oktana-coop/automerge-prosemirror"
   },
   "type": "module",
   "main": "dist/index.js",
