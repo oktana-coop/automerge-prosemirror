@@ -6,6 +6,8 @@ import { SchemaAdapter } from "./schema.js"
 import { basicSchemaAdapter } from "./basicSchema.js"
 import { pmDocFromSpans } from "./traversal.js"
 import { syncPlugin } from "./syncPlugin.js"
+export { diffPlugin } from "./diffPlugin.js"
+
 export { type DocHandle }
 
 export {
@@ -72,7 +74,11 @@ export function init(
   handle: DocHandle<unknown>,
   pathToTextField: A.Prop[],
   options: { schemaAdapter: SchemaAdapter } | undefined = undefined,
-): { schema: Schema; pmDoc: Node; plugin: Plugin } {
+): {
+  schema: Schema
+  pmDoc: Node
+  plugin: Plugin
+} {
   const adapter = options?.schemaAdapter ?? basicSchemaAdapter
   const doc = handle.docSync()
   if (!doc) {

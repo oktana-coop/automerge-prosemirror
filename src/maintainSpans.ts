@@ -1,6 +1,18 @@
 import { next as am } from "@automerge/automerge/slim"
 import { isPrefixOfArray, isArrayEqual } from "./utils.js"
 
+// This function wraps `patchSpans` so that we
+// create a new array of spans instead of mutating the input.
+export function applyPatchToSpans(
+  atPath: am.Prop[],
+  inputSpans: am.Span[],
+  patch: am.Patch,
+): am.Span[] {
+  const spans = [...inputSpans]
+  patchSpans(atPath, spans, patch)
+  return spans
+}
+
 export function patchSpans(
   atPath: am.Prop[],
   spans: am.Span[],
