@@ -1,6 +1,6 @@
 {
   "name": "@oktana-coop/automerge-prosemirror",
-  "version": "0.0.13-10",
+  "version": "0.0.13-11",
   "license": "MIT",
   "scripts": {
     "prettier": "prettier '**/*.{js,ts,tsx,json}' --check",
@@ -28,12 +28,12 @@
     "ordered-map": "^0.1.0",
     "prosemirror-changeset": "^2.2.1",
     "prosemirror-history": "^1.4.1",
-    "prosemirror-model": "^1.24.1",
+    "prosemirror-model": "^1.25.2",
     "prosemirror-schema-basic": "^1.2.4",
     "prosemirror-schema-list": "^1.5.1",
     "prosemirror-state": "^1.4.3",
-    "prosemirror-transform": "^1.10.3",
-    "prosemirror-view": "^1.38.1"
+    "prosemirror-transform": "^1.10.4",
+    "prosemirror-view": "^1.40.1"
   },
   "devDependencies": {
     "@automerge/automerge-repo": "^2.0.0-alpha.13",
@@ -57,10 +57,10 @@
     "lucide-react": "^0.344.0",
     "mocha": "^10.2.0",
     "prettier": "^3.2.5",
-    "prosemirror-commands": "^1.7.0",
+    "prosemirror-commands": "^1.7.1",
     "prosemirror-example-setup": "^1.2.3",
     "prosemirror-inputrules": "^1.5.0",
-    "prosemirror-keymap": "^1.2.2",
+    "prosemirror-keymap": "^1.2.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "ts-node": "^10.9.2",
